@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISL Relational Detector</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            background: #000;
+            max-width: 100%;
+        }
+        /* Mobile responsive canvas */
+        canvas {
+            display: block;
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+        }
+        video { display: none; }
+        
+        .info-panel {
+            margin-top: 20px;
+            text-align: center;
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 10px;
+            width: 100%;
+            max-width: 600px;
+        }
+        h1 { margin: 0; font-size: 3rem; color: #00ffcc; }
+        p { color: #aaa; margin: 10px 0 0 0; }
+        #status { font-size: 0.9rem; margin-top: 15px; color: #ffcc00; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+    </div>
+
+    <div class="info-panel">
+        <h1 id="prediction-text">Waiting...</h1>
+        <p>Confidence: <span id="confidence-text">0%</span></p>
+        <div id="status">Loading Model...</div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const predictionText = document.getElementById('prediction-text');
+        const confidenceText = document.getElementById('confidence-text');
+        const statusText = document.getElementById('status');
+
+        // IMPORTANT: Use relative path so it works automatically on Render
+        const API_URL = "/predict";
+
+        let lastRequestTime = 0;
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Draw camera feed
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Draw skeleton
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+                drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
+
+                // Send to Python Backend
+                sendToBackend(landmarks);
+            } else {
+                predictionText.innerText = "No Hand";
+                confidenceText.innerText = "-";
+            }
+            canvasCtx.restore();
+        }
+
+        async function sendToBackend(landmarks) {
+            // Rate limiter: Send every 200ms (5 FPS) to keep the free server happy
+            const now = Date.now();
+            if (now - lastRequestTime < 200) return;
+            lastRequestTime = now;
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ landmarks: landmarks })
+                });
+
+                const data = await response.json();
+                
+                if (data.sign) {
+                    predictionText.innerText = data.sign;
+                    confidenceText.innerText = Math.round(data.confidence * 100) + "%";
+                    statusText.innerText = "Active - Detecting";
+                }
+            } catch (error) {
+                console.error("API Error:", error);
+                // Don't show error on UI to avoid flickering, just log it
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+        statusText.innerText = "Camera Started";
+    </script>
+</body>
+</html>
